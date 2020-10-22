@@ -358,14 +358,16 @@ Room.prototype.getPendingEvents = function() {
 
 /**
  * Check whether the pending event list contains a given event by ID.
- * If pending event ordering is not "detached" then this returns false.
  *
  * @param {string} eventId The event ID to check for.
  * @return {boolean}
+ * @throws If <code>opts.pendingEventOrdering</code> was not 'detached'
  */
 Room.prototype.hasPendingEvent = function(eventId) {
     if (this._opts.pendingEventOrdering !== "detached") {
-        return false;
+        throw new Error(
+            "Cannot call hasPendingEvent with pendingEventOrdering == " +
+                this._opts.pendingEventOrdering);
     }
 
     return this._pendingEventList.some(event => event.getId() === eventId);

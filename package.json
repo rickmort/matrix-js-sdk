@@ -1,6 +1,6 @@
 {
   "name": "matrix-js-sdk",
-  "version": "8.5.0",
+  "version": "8.4.1",
   "description": "Matrix Client-Server SDK for Javascript",
   "scripts": {
     "prepare": "yarn build",
@@ -14,7 +14,7 @@
     "build:minify-browser": "terser dist/browser-matrix.js --compress --mangle --source-map --output dist/browser-matrix.min.js",
     "gendoc": "jsdoc -c jsdoc.json -P package.json",
     "lint": "yarn lint:types && yarn lint:js",
-    "lint:js": "eslint --max-warnings 73 src spec",
+    "lint:js": "eslint --max-warnings 76 src spec",
     "lint:types": "tsc --noEmit",
     "test": "jest spec/ --coverage --testEnvironment node",
     "test:watch": "jest spec/ --coverage --testEnvironment node --watch"
@@ -67,7 +67,6 @@
     "@babel/preset-env": "^7.11.5",
     "@babel/preset-typescript": "^7.10.4",
     "@babel/register": "^7.11.5",
-    "@types/jest": "^26.0.14",
     "@types/node": "12",
     "@types/request": "^2.48.5",
     "babel-eslint": "^10.1.0",

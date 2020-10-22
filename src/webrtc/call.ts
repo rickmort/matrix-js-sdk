@@ -22,10 +22,9 @@ limitations under the License.
  */
 
 import {logger} from '../logger';
-import {EventEmitter} from 'events';
-import * as utils from '../utils';
-import MatrixEvent from '../models/event';
-import {EventType} from '../@types/event';
+import {EventEmitter} from "events";
+import * as utils from "../utils";
+import MatrixEvent from "../models/event"
 
 // events: hangup, error(err), replaced(call), state(state, oldState)
 
@@ -46,10 +45,10 @@ import {EventType} from '../@types/event';
  */
 
 interface CallOpts {
-    roomId?: string,
-    client?: any, // Fix when client is TSified
-    forceTURN?: boolean,
-    turnServers?: Array<TurnServer>,
+    roomId: string,
+    client: any, // Fix when client is TSified
+    forceTURN: boolean,
+    turnServers: Array<TurnServer>,
 }
 
 interface TurnServer {
@@ -59,7 +58,7 @@ interface TurnServer {
     ttl?: number,
 }
 
-export enum CallState {
+enum CallState {
     Fledgling = 'fledgling',
     InviteSent = 'invite_sent',
     WaitLocalMedia = 'wait_local_media',
@@ -71,26 +70,19 @@ export enum CallState {
     Ended = 'ended',
 }
 
-export enum CallType {
+enum CallType {
     Voice = 'voice',
     Video = 'video',
 }
 
-export enum CallDirection {
+enum CallDirection {
     Inbound = 'inbound',
     Outbound = 'outbound',
 }
 
-export enum CallParty {
+enum CallParty {
     Local = 'local',
     Remote = 'remote',
-}
-
-export enum CallEvent {
-    Hangup = 'hangup',
-    State = 'state',
-    Error = 'error',
-    Replaced = 'replaced',
 }
 
 enum MediaQueueId {
@@ -99,10 +91,7 @@ enum MediaQueueId {
     LocalVideo = 'local_video',
 }
 
-export enum CallErrorCode {
-    /** The user chose to end the call */
-    UserHangup = 'user_hangup',
-
+enum CallErrorCode {
     /** An error code when the local client failed to create an offer. */
     LocalOfferFailed = 'local_offer_failed',
     /**
@@ -165,14 +154,6 @@ export enum CallErrorCode {
     Replaced = 'replaced',
 }
 
-/**
- * The version field that we set in m.call.* events
- * Once we are able to speak v1 VoIP sufficiently, this
- * bumped to 1. While we partially speak v1 VoIP, it remains
- * as 0.
- */
-const VOIP_PROTO_VERSION = 0;
-
 /** The fallback ICE server to use for STUN or TURN protocols. */
 const FALLBACK_ICE_SERVER = 'stun:turn.matrix.org';
 
@@ -209,7 +190,6 @@ export class MatrixCall extends EventEmitter {
     hangupParty: CallParty;
     hangupReason: string;
     direction: CallDirection;
-    ourPartyId: string;
 
     private client: any; // Fix when client is TSified
     private forceTURN: boolean;
@@ -225,18 +205,13 @@ export class MatrixCall extends EventEmitter {
     private screenSharingStream: MediaStream;
     private remoteStream: MediaStream;
     private localAVStream: MediaStream;
-    private inviteOrAnswerSent: boolean;
+    private answerContent: object;
     private waitForLocalAVStream: boolean;
     // XXX: This is either the invite or answer from remote...
     private msg: any;
     // XXX: I don't know why this is called 'config'.
     private config: MediaStreamConstraints;
     private successor: MatrixCall;
-    private opponentVersion: number;
-    // The party ID of the other side: undefined if we haven't chosen a partner
-    // yet, null if we have but they didn't send a party ID.
-    private opponentPartyId: string;
-    private inviteTimeout;
 
     constructor(opts: CallOpts) {
         super();
@@ -244,7 +219,6 @@ export class MatrixCall extends EventEmitter {
         this.client = opts.client;
         this.type = null;
         this.forceTURN = opts.forceTURN;
-        this.ourPartyId = this.client.deviceId;
         // Array of Objects with urls, username, credential keys
         this.turnServers = opts.turnServers || [];
         if (this.turnServers.length === 0 && this.client.isFallbackICEServerAllowed()) {
@@ -272,7 +246,6 @@ export class MatrixCall extends EventEmitter {
         this.mediaPromises = Object.create(null);
 
         this.sentEndOfCandidates = false;
-        this.inviteOrAnswerSent = false;
     }
 
     /**
@@ -324,7 +297,7 @@ export class MatrixCall extends EventEmitter {
             const audioConstraints = getUserMediaVideoContraints(CallType.Voice);
             this.placeCallWithConstraints(audioConstraints);
         } catch (err) {
-            this.emit(CallEvent.Error,
+            this.emit("error",
                 new CallError(
                     CallErrorCode.NoUserMedia,
                     "Failed to get screen-sharing stream: ", err,
@@ -443,23 +416,24 @@ export class MatrixCall extends EventEmitter {
             return;
         }
 
-        // According to previous comments in this file, firefox at some point did not
-        // add streams until media started ariving on them. Testing latest firefox
-        // (81 at time of writing), this is no longer a problem, so let's do it the correct way.
-        if (!this.remoteStream || this.remoteStream.getTracks().length === 0) {
-            logger.error("No remote stream or no tracks after setting remote description!");
-            this.terminate(CallParty.Local, CallErrorCode.SetRemoteDescription, false);
-            return;
-        }
-
-        this.type = this.remoteStream.getTracks().some(t => t.kind === 'video') ? CallType.Video : CallType.Voice;
-
         this.setState(CallState.Ringing);
         this.direction = CallDirection.Inbound;
-        this.opponentVersion = this.msg.version;
-        this.opponentPartyId = this.msg.party_id || null;
 
-        if (event.getLocalAge()) {
+        // firefox and OpenWebRTC's RTCPeerConnection doesn't add streams until it
+        // starts getting media on them so we need to figure out whether a video
+        // channel has been offered by ourselves.
+        // XXX: This comment is probably outdated: check & remove this if so
+        if (
+            this.msg.offer &&
+            this.msg.offer.sdp &&
+            this.msg.offer.sdp.indexOf('m=video') > -1
+        ) {
+            this.type = CallType.Video;
+        } else {
+            this.type = CallType.Voice;
+        }
+
+        if (event.getAge()) {
             setTimeout(() => {
                 if (this.state == CallState.Ringing) {
                     logger.debug("Call invite has expired. Hanging up.");
@@ -469,14 +443,14 @@ export class MatrixCall extends EventEmitter {
                     if (this.peerConn.signalingState != 'closed') {
                         this.peerConn.close();
                     }
-                    this.emit(CallEvent.Hangup);
+                    this.emit("hangup");
                 }
-            }, this.msg.lifetime - event.getLocalAge());
+            }, this.msg.lifetime - event.getAge());
         }
     }
 
     /**
-     * Configure this call from a hangup or reject event. Used by MatrixClient.
+     * Configure this call from a hangup event. Used by MatrixClient.
      * @param {MatrixEvent} event The m.call.hangup event
      */
     initWithHangup(event: MatrixEvent) {
@@ -491,21 +465,20 @@ export class MatrixCall extends EventEmitter {
      * Answer a call.
      */
     async answer() {
-        if (this.inviteOrAnswerSent) {
+        logger.debug(`Answering call ${this.callId} of type ${this.type}`);
+
+        if (this.answerContent) {
+            this.sendAnswer();
             return;
         }
-
-        logger.debug(`Answering call ${this.callId} of type ${this.type}`);
 
         if (!this.localAVStream && !this.waitForLocalAVStream) {
             const constraints = getUserMediaVideoContraints(this.type);
             logger.log("Getting user media with constraints", constraints);
             this.setState(CallState.WaitLocalMedia);
-            this.waitForLocalAVStream = true;
 
             try {
                 const mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
-                this.waitForLocalAVStream = false;
                 this.gotUserMediaForAnswer(mediaStream);
             } catch (e) {
                 this.getUserMediaFailed(e);
@@ -529,7 +502,7 @@ export class MatrixCall extends EventEmitter {
             logger.debug("Telling new call to wait for local media");
             newCall.waitForLocalAVStream = true;
         } else if (this.state === CallState.CreateOffer) {
-            logger.debug("Handing local stream to new call");
+            logger.debugl("Handing local stream to new call");
             newCall.gotUserMediaForAnswer(this.localAVStream);
             delete(this.localAVStream);
         } else if (this.state === CallState.InviteSent) {
@@ -541,7 +514,7 @@ export class MatrixCall extends EventEmitter {
         newCall.remoteVideoElement = this.remoteVideoElement;
         newCall.remoteAudioElement = this.remoteAudioElement;
         this.successor = newCall;
-        this.emit(CallEvent.Replaced, newCall);
+        this.emit("replaced", newCall);
         this.hangup(CallErrorCode.Replaced, true);
     }
 
@@ -551,38 +524,16 @@ export class MatrixCall extends EventEmitter {
      * @param {boolean} suppressEvent True to suppress emitting an event.
      */
     hangup(reason: CallErrorCode, suppressEvent: boolean) {
-        if (this.callHasEnded()) return;
+        if (this.state === CallState.Ended) return;
 
         logger.debug("Ending call " + this.callId);
         this.terminate(CallParty.Local, reason, !suppressEvent);
-        const content = {};
-        // Continue to send no reason for user hangups temporarily, until
-        // clients understand the user_hangup reason (voip v1)
-        if (reason !== CallErrorCode.UserHangup) content['reason'] = reason;
-        this.sendVoipEvent(EventType.CallHangup, {});
-    }
-
-    /**
-     * Reject a call
-     * This used to be done by calling hangup, but is a separate method and protocol
-     * event as of MSC2746.
-     */
-    reject() {
-        if (this.state !== CallState.Ringing) {
-            throw Error("Call must be in 'ringing' state to reject!");
-        }
-
-        if (this.opponentVersion < 1) {
-            logger.info(
-                `Opponent version is less than 1 (${this.opponentVersion}): sending hangup instead of reject`,
-            );
-            this.hangup(CallErrorCode.UserHangup, true);
-            return;
-        }
-
-        logger.debug("Rejecting call: " + this.callId);
-        this.terminate(CallParty.Local, CallErrorCode.UserHangup, true);
-        this.sendVoipEvent(EventType.CallReject, {});
+        const content = {
+            version: 0,
+            call_id: this.callId,
+            reason: reason,
+        };
+        this.sendEvent('m.call.hangup', content);
     }
 
     /**
@@ -648,7 +599,7 @@ export class MatrixCall extends EventEmitter {
             this.successor.gotUserMediaForAnswer(stream);
             return;
         }
-        if (this.callHasEnded()) {
+        if (this.state === CallState.Ended) {
             return;
         }
         logger.debug("gotUserMediaForInvite -> " + this.type);
@@ -694,24 +645,10 @@ export class MatrixCall extends EventEmitter {
     };
 
     private sendAnswer() {
-        const answerContent = {
-            answer: {
-                sdp: this.peerConn.localDescription.sdp,
-                // type is now deprecated as of Matrix VoIP v1, but
-                // required to still be sent for backwards compat
-                type: this.peerConn.localDescription.type,
-            },
-        };
-        // We have just taken the local description from the peerconnection which will
-        // contain all the local candidates added so far, so we can discard any candidates
-        // we had queued up because they'll be in the answer.
-        logger.info(`Discarding ${this.candidateSendQueue.length} candidates that will be sent in answer`);
-        this.candidateSendQueue = [];
-
-        this.sendVoipEvent(EventType.CallAnswer, answerContent).then(() => {
+        this.sendEvent('m.call.answer', this.answerContent).then(() => {
+            this.setState(CallState.Connecting);
             // If this isn't the first time we've tried to send the answer,
             // we may have candidates queued up, so send them now.
-            this.inviteOrAnswerSent = true;
             this.sendCandidateQueue();
         }).catch((error) => {
             // We've failed to answer: back to the ringing state
@@ -724,13 +661,13 @@ export class MatrixCall extends EventEmitter {
                 code = CallErrorCode.UnknownDevices;
                 message = "Unknown devices present in the room";
             }
-            this.emit(CallEvent.Error, new CallError(code, message, error));
+            this.emit("error", new CallError(code, message, error));
             throw error;
         });
     }
 
     private gotUserMediaForAnswer = async (stream: MediaStream) => {
-        if (this.callHasEnded()) {
+        if (this.state === CallState.Ended) {
             return;
         }
 
@@ -765,13 +702,17 @@ export class MatrixCall extends EventEmitter {
 
         try {
             await this.peerConn.setLocalDescription(myAnswer);
-            this.setState(CallState.Connecting);
 
-            // Allow a short time for initial candidates to be gathered
-            await new Promise(resolve => {
-                setTimeout(resolve, 200);
-            });
-
+            this.answerContent = {
+                version: 0,
+                call_id: this.callId,
+                answer: {
+                    sdp: this.peerConn.localDescription.sdp,
+                    // type is now deprecated as of Matrix VoIP v1, but
+                    // required to still be sent for backwards compat
+                    type: this.peerConn.localDescription.type,
+                },
+            };
             this.sendAnswer();
         } catch (err) {
             logger.debug("Error setting local description!", err);
@@ -791,12 +732,12 @@ export class MatrixCall extends EventEmitter {
                 event.candidate.candidate,
             );
 
-            if (this.callHasEnded()) return;
+            if (this.state == CallState.Ended) return;
 
             // As with the offer, note we need to make a copy of this object, not
             // pass the original: that broke in Chrome ~m43.
             if (event.candidate.candidate !== '' || !this.sentEndOfCandidates) {
-                this.queueCandidate(event.candidate);
+                this.sendCandidate(event.candidate);
 
                 if (event.candidate.candidate === '') this.sentEndOfCandidates = true;
             }
@@ -816,121 +757,55 @@ export class MatrixCall extends EventEmitter {
             const c = {
                 candidate: '',
             } as RTCIceCandidate;
-            this.queueCandidate(c);
+            this.sendCandidate(c);
             this.sentEndOfCandidates = true;
         }
     };
 
-    onRemoteIceCandidatesReceived(ev: MatrixEvent) {
-        if (this.callHasEnded()) {
+    /**
+     * Used by MatrixClient.
+     * @param {Object} cand
+     */
+    gotRemoteIceCandidate(cand: RTCIceCandidate) {
+        if (this.state == CallState.Ended) {
             //debuglog("Ignoring remote ICE candidate because call has ended");
             return;
         }
-
-        if (!this.partyIdMatches(ev.getContent())) {
-            logger.info(
-                `Ignoring candidates from party ID ${ev.getContent().party_id}: ` +
-                `we have chosen party ID ${this.opponentPartyId}`,
-            );
+        if (
+            (cand.sdpMid === null || cand.sdpMid === undefined) &&
+            (cand.sdpMLineIndex === null || cand.sdpMLineIndex === undefined)
+        ) {
+            logger.debug("Ignoring remote ICE candidate with no sdpMid or sdpMLineIndex");
             return;
         }
-
-        const cands = ev.getContent().candidates;
-        if (!cands) {
-            logger.info("Ignoring candidates event with no candidates!");
-            return;
-        }
-
-        for (const cand of cands) {
-            if (
-                (cand.sdpMid === null || cand.sdpMid === undefined) &&
-                (cand.sdpMLineIndex === null || cand.sdpMLineIndex === undefined)
-            ) {
-                logger.debug("Ignoring remote ICE candidate with no sdpMid or sdpMLineIndex");
-                return;
-            }
-            logger.debug("Got remote ICE " + cand.sdpMid + " candidate: " + cand.candidate);
-            this.peerConn.addIceCandidate(cand);
-        }
+        logger.debug("Got remote ICE " + cand.sdpMid + " candidate: " + cand.candidate);
+        this.peerConn.addIceCandidate(cand);
     }
 
     /**
      * Used by MatrixClient.
      * @param {Object} msg
      */
-    async onAnswerReceived(event: MatrixEvent) {
-        if (this.callHasEnded()) {
+    async receivedAnswer(msg: MatrixEvent) {
+        if (this.state === CallState.Ended) {
             return;
         }
-
-        if (this.opponentPartyId !== undefined) {
-            logger.info(
-                `Ignoring answer from party ID ${event.getContent().party_id}: ` +
-                `we already have an answer/reject from ${this.opponentPartyId}`,
-            );
-            return;
-        }
-
-        this.opponentVersion = event.getContent().version;
-        this.opponentPartyId = event.getContent().party_id || null;
-
-        this.setState(CallState.Connecting);
 
         try {
-            await this.peerConn.setRemoteDescription(event.getContent().answer);
+            this.peerConn.setRemoteDescription(msg.answer);
         } catch (e) {
             logger.debug("Failed to set remote description", e);
             this.terminate(CallParty.Local, CallErrorCode.SetRemoteDescription, false);
             return;
         }
 
-        // If the answer we selected has a party_id, send a select_answer event
-        // We do this after setting the remote description since otherwise we'd block
-        // call setup on it
-        if (this.opponentPartyId !== null) {
-            try {
-                await this.sendVoipEvent(EventType.CallSelectAnswer, {
-                    selected_party_id: this.opponentPartyId,
-                });
-            } catch (err) {
-                // This isn't fatal, and will just mean that if another party has raced to answer
-                // the call, they won't know they got rejected, so we carry on & don't retry.
-                logger.warn("Failed to send select_answer event", err);
-            }
-        }
-    }
-
-    async onSelectAnswerReceived(event: MatrixEvent) {
-        if (this.direction !== CallDirection.Inbound) {
-            logger.warn("Got select_answer for an outbound call: ignoring");
-            return;
-        }
-
-        const selectedPartyId = event.getContent().selected_party_id;
-
-        if (selectedPartyId === undefined || selectedPartyId === null) {
-            logger.warn("Got nonsensical select_answer with null/undefined selected_party_id: ignoring");
-            return;
-        }
-
-        if (selectedPartyId !== this.ourPartyId) {
-            logger.info(`Got select_answer for party ID ${selectedPartyId}: we are party ID ${this.ourPartyId}.`);
-            // The other party has picked somebody else's answer
-            this.terminate(CallParty.Remote, CallErrorCode.AnsweredElsewhere, true);
-        }
-    }
-
-    private callHasEnded() : boolean {
-        // This exists as workaround to typescript trying to be clever and erroring
-        // when putting if (this.state === CallState.Ended) return; twice in the same
-        // function, even though that function is async.
-        return this.state === CallState.Ended;
+        this.setState(CallState.Connecting);
     }
 
     private gotLocalOffer = async (description: RTCSessionDescriptionInit) => {
         logger.debug("Created offer: ", description);
 
-        if (this.callHasEnded()) {
+        if (this.state === CallState.Ended) {
             logger.debug("Ignoring newly created offer on call ID " + this.callId +
                 " because the call has ended");
             return;
@@ -944,14 +819,9 @@ export class MatrixCall extends EventEmitter {
             return
         }
 
-        // Allow a short time for initial candidates to be gathered
-        await new Promise(resolve => {
-            setTimeout(resolve, 200);
-        });
-
-        if (this.callHasEnded()) return;
-
         const content = {
+            version: 0,
+            call_id: this.callId,
             // OpenWebRTC appears to add extra stuff (like the DTLS fingerprint)
             // to the description when setting it on the peerconnection.
             // According to the spec it should only add ICE
@@ -969,19 +839,10 @@ export class MatrixCall extends EventEmitter {
             },
             lifetime: CALL_TIMEOUT_MS,
         };
-
-        // Get rid of any candidates waiting to be sent: they'll be included in the local
-        // description we just got and will send in the offer.
-        logger.info(`Discarding ${this.candidateSendQueue.length} candidates that will be sent in offer`);
-        this.candidateSendQueue = [];
-
         try {
-            await this.sendVoipEvent(EventType.CallInvite, content);
-            this.sendCandidateQueue();
-            this.inviteOrAnswerSent = true;
+            await this.sendEvent('m.call.invite', content);
             this.setState(CallState.InviteSent);
-            this.inviteTimeout = setTimeout(() => {
-                this.inviteTimeout = null;
+            setTimeout(() => {
                 if (this.state === CallState.InviteSent) {
                     this.hangup(CallErrorCode.InviteTimeout, false);
                 }
@@ -996,7 +857,7 @@ export class MatrixCall extends EventEmitter {
 
             this.client.cancelPendingEvent(error.event);
             this.terminate(CallParty.Local, code, false);
-            this.emit(CallEvent.Error, new CallError(code, message, error));
+            this.emit("error", new CallError(code, message, error));
         }
     };
 
@@ -1005,7 +866,7 @@ export class MatrixCall extends EventEmitter {
 
         this.terminate(CallParty.Local, CallErrorCode.LocalOfferFailed, false);
         this.emit(
-            CallEvent.Error,
+            "error",
             new CallError(
                 CallErrorCode.LocalOfferFailed,
                 "Failed to get local offer!", err,
@@ -1021,7 +882,7 @@ export class MatrixCall extends EventEmitter {
 
         this.terminate(CallParty.Local, CallErrorCode.NoUserMedia, false);
         this.emit(
-            CallEvent.Error,
+            "error",
             new CallError(
                 CallErrorCode.NoUserMedia,
                 "Couldn't start capturing media! Is your microphone set up and " +
@@ -1031,15 +892,16 @@ export class MatrixCall extends EventEmitter {
     };
 
     onIceConnectionStateChanged = () => {
-        if (this.callHasEnded()) {
+        if (this.state === CallState.Ended) {
             return; // because ICE can still complete as we're ending the call
         }
         logger.debug(
-            "ICE connection state changed to: " + this.peerConn.iceConnectionState,
+            "Ice connection state changed to: " + this.peerConn.iceConnectionState,
         );
         // ideally we'd consider the call to be connected when we get media but
         // chrome doesn't implement any of the 'onstarted' events yet
-        if (this.peerConn.iceConnectionState == 'connected') {
+        if (this.peerConn.iceConnectionState == 'completed' ||
+                this.peerConn.iceConnectionState == 'connected') {
             this.setState(CallState.Connected);
         } else if (this.peerConn.iceConnectionState == 'failed') {
             this.hangup(CallErrorCode.IceFailed, false);
@@ -1055,6 +917,10 @@ export class MatrixCall extends EventEmitter {
 
     private onTrack = (ev: RTCTrackEvent) => {
         logger.debug(`Track id ${ev.track.id} of kind ${ev.track.kind} added`);
+
+        if (ev.track.kind == 'video') {
+            this.type = CallType.Video;
+        }
 
         // This is relatively complex as we may get any number of tracks that may
         // be in any number of streams, or not in streams at all, etc.
@@ -1134,29 +1000,7 @@ export class MatrixCall extends EventEmitter {
 
     onHangupReceived = (msg) => {
         logger.debug("Hangup received");
-
-        // party ID must match (our chosen partner hanging up the call) or be undefined (we haven't chosen
-        // a partner yet but we're treating the hangup as a reject as per VoIP v0)
-        if (!this.partyIdMatches(msg) && this.opponentPartyId !== undefined) {
-            logger.info(`Ignoring message from party ID ${msg.party_id}: our partner is ${this.opponentPartyId}`);
-            return;
-        }
-
-        // default reason is user_hangup
-        this.terminate(CallParty.Remote, msg.reason || CallErrorCode.UserHangup, true);
-    };
-
-    onRejectReceived = (msg) => {
-        logger.debug("Reject received");
-
-        // No need to check party_id for reject because if we'd received either
-        // an answer or reject, we wouldn't be in state InviteSent
-
-        if (this.state === CallState.InviteSent) {
-            this.terminate(CallParty.Remote, CallErrorCode.UserHangup, true);
-        } else {
-            logger.debug(`Call is in state: ${this.state}: ignoring reject`);
-        }
+        this.terminate(CallParty.Remote, msg.reason, true);
     };
 
     onAnsweredElsewhere = (msg) => {
@@ -1167,7 +1011,7 @@ export class MatrixCall extends EventEmitter {
     setState(state: CallState) {
         const oldState = this.state;
         this.state = state;
-        this.emit(CallEvent.State, state, oldState);
+        this.emit("state", state, oldState);
     }
 
     /**
@@ -1176,15 +1020,11 @@ export class MatrixCall extends EventEmitter {
      * @param {Object} content
      * @return {Promise}
      */
-    private sendVoipEvent(eventType: string, content: object) {
-        return this.client.sendEvent(this.roomId, eventType, Object.assign({}, content, {
-            version: VOIP_PROTO_VERSION,
-            call_id: this.callId,
-            party_id: this.ourPartyId,
-        }));
+    private sendEvent(eventType: string, content: object) {
+        return this.client.sendEvent(this.roomId, eventType, content);
     }
 
-    queueCandidate(content: RTCIceCandidate) {
+    sendCandidate(content: RTCIceCandidate) {
         // Sends candidates with are sent in a special way because we try to amalgamate
         // them into one message
         this.candidateSendQueue.push(content);
@@ -1193,28 +1033,17 @@ export class MatrixCall extends EventEmitter {
         // means we tried to pick (ie. started generating candidates) and then failed to
         // send the answer and went back to the ringing state. Queue up the candidates
         // to send if we sucessfully send the answer.
-        // Equally don't send if we haven't yet sent the answer because we can send the
-        // first batch of candidates along with the answer
-        if (this.state === CallState.Ringing || !this.inviteOrAnswerSent) return;
-
-        // MSC2746 reccomends these values (can be quite long when calling because the
-        // callee will need a while to answer the call)
-        const delay = this.direction === CallDirection.Inbound ? 500 : 2000;
+        if (this.state === CallState.Ringing) return;
 
         if (this.candidateSendTries === 0) {
             setTimeout(() => {
                 this.sendCandidateQueue();
-            }, delay);
+            }, 100);
         }
     }
 
     private terminate(hangupParty: CallParty, hangupReason: CallErrorCode, shouldEmit: boolean) {
-        if (this.callHasEnded()) return;
-
-        if (this.inviteTimeout) {
-            clearTimeout(this.inviteTimeout);
-            this.inviteTimeout = null;
-        }
+        if (this.state === CallState.Ended) return;
 
         const remoteVid = this.getRemoteVideoElement();
         const remoteAud = this.getRemoteAudioElement();
@@ -1253,7 +1082,7 @@ export class MatrixCall extends EventEmitter {
             this.peerConn.close();
         }
         if (shouldEmit) {
-            this.emit(CallEvent.Hangup, this);
+            this.emit("hangup", self);
         }
     }
 
@@ -1270,10 +1099,8 @@ export class MatrixCall extends EventEmitter {
             }
         }
 
-        if (this.remoteStream) {
-            for (const track of this.remoteStream.getTracks()) {
-                track.stop();
-            }
+        for (const track of this.remoteStream.getTracks()) {
+            track.stop();
         }
     }
 
@@ -1294,10 +1121,12 @@ export class MatrixCall extends EventEmitter {
         this.candidateSendQueue = [];
         ++this.candidateSendTries;
         const content = {
+            version: 0,
+            call_id: this.callId,
             candidates: cands,
         };
         logger.debug("Attempting to send " + cands.length + " candidates");
-        this.sendVoipEvent(EventType.CallCandidates, content).then(() => {
+        this.sendEvent('m.call.candidates', content).then(() => {
             this.candidateSendTries = 0;
             this.sendCandidateQueue();
         }, (error) => {
@@ -1308,7 +1137,7 @@ export class MatrixCall extends EventEmitter {
             if (this.candidateSendTries > 5) {
                 logger.debug(
                     "Failed to send candidates on attempt " + this.candidateSendTries +
-                    ". Giving up for now.", error,
+                    ". Giving up for now.",
                 );
                 this.candidateSendTries = 0;
                 return;
@@ -1316,7 +1145,7 @@ export class MatrixCall extends EventEmitter {
 
             const delayMs = 500 * Math.pow(2, this.candidateSendTries);
             ++this.candidateSendTries;
-            logger.debug("Failed to send candidates. Retrying in " + delayMs + "ms", error);
+            logger.debug("Failed to send candidates. Retrying in " + delayMs + "ms");
             setTimeout(() => {
                 this.sendCandidateQueue();
             }, delayMs);
@@ -1325,16 +1154,10 @@ export class MatrixCall extends EventEmitter {
 
     private async placeCallWithConstraints(constraints: MediaStreamConstraints) {
         logger.log("Getting user media with constraints", constraints);
-        // XXX Find a better way to do this
-        this.client._callEventHandler.calls.set(this.callId, this);
+        this.client.callList[this.callId] = this;
         this.setState(CallState.WaitLocalMedia);
         this.direction = CallDirection.Outbound;
         this.config = constraints;
-        // It would be really nice if we could start gathering candidates at this point
-        // so the ICE agent could be gathering while we open our media devices: we already
-        // know the type of the call and therefore what tracks we want to send.
-        // Perhaps we could do this by making fake tracks now and then using replaceTrack()
-        // once we have the actual tracks? (Can we make fake tracks?)
         try {
             const mediaStream = await navigator.mediaDevices.getUserMedia(constraints);
             this.gotUserMediaForInvite(mediaStream);
@@ -1345,12 +1168,11 @@ export class MatrixCall extends EventEmitter {
     }
 
     private createPeerConnection(): RTCPeerConnection {
-        const pc = new window.RTCPeerConnection({
+        const pc = new RTCPeerConnection({
             iceTransportPolicy: this.forceTURN ? 'relay' : undefined,
             iceServers: this.turnServers,
         });
 
-        // 'connectionstatechange' would be better, but firefox doesn't implement that.
         pc.addEventListener('iceconnectionstatechange', this.onIceConnectionStateChanged);
         pc.addEventListener('signalingstatechange', this.onSignallingStateChanged);
         pc.addEventListener('icecandidate', this.gotLocalIceCandidate);
@@ -1358,12 +1180,6 @@ export class MatrixCall extends EventEmitter {
         pc.addEventListener('track', this.onTrack);
 
         return pc;
-    }
-
-    private partyIdMatches(msg): boolean {
-        // They must either match or both be absent (in which case opponentPartyId will be null)
-        const msgPartyId = msg.party_id || null;
-        return msgPartyId === this.opponentPartyId;
     }
 }
 
@@ -1383,7 +1199,7 @@ function isTracksEnabled(tracks: Array<MediaStreamTrack>) {
 }
 
 function getUserMediaVideoContraints(callType: CallType) {
-    const isWebkit = !!navigator.webkitGetUserMedia;
+    const isWebkit = !!window.navigator.webkitGetUserMedia;
 
     switch (callType) {
         case CallType.Voice:
@@ -1459,7 +1275,7 @@ export function createNewMatrixCall(client: any, roomId: string, options?: CallO
     try {
         const supported = Boolean(
             window.RTCPeerConnection || window.RTCSessionDescription ||
-            window.RTCIceCandidate || navigator.mediaDevices,
+            window.RTCIceCandidate || navigator.getUserMedia,
         );
         if (!supported) {
             logger.error("WebRTC is not supported in this browser / environment");
